@@ -7,7 +7,9 @@
 
 #define TAG "ProtoPirateEmulate"
 
-#define MIN_TX_TIME 666
+#define MIN_TX_TIME             666U
+#define MIN_TX_TIME_KIA_V3_V4   1600U
+
 typedef struct {
     uint32_t original_counter;
     uint32_t current_counter;
@@ -36,6 +38,17 @@ static bool emulate_radio_ready(ProtoPirateApp* app) {
     furi_check(app);
     return app->radio_initialized && app->txrx && app->txrx->radio_device &&
            app->txrx->environment;
+}
+
+static uint32_t emulate_min_tx_time(const EmulateContext* ctx) {
+    if(!ctx || !ctx->protocol_name) return MIN_TX_TIME;
+    const char* proto = furi_string_get_cstr(ctx->protocol_name);
+    if(strcmp(proto, "Kia V3/V4") == 0 || strcmp(proto, "Kia V3") == 0 ||
+       strcmp(proto, "Kia V4") == 0 || strcmp(proto, "KIA/HYU V3") == 0 ||
+       strcmp(proto, "KIA/HYU V4") == 0) {
+        return MIN_TX_TIME_KIA_V3_V4;
+    }
+    return MIN_TX_TIME;
 }
 
 #define TX_PRESET_VALUES_AM    8 //Gets 1 added, so is 1 less than actual value.
@@ -1004,20 +1017,6 @@ bool protopirate_scene_emulate_on_event(void* context, SceneManagerEvent event) 
                     break;
                 }
 
-                // Re-deserialize with updated values
-                flipper_format_rewind(ctx->flipper_format);
-                SubGhzProtocolStatus status =
-                    subghz_transmitter_deserialize(ctx->transmitter, ctx->flipper_format);
-
-                if(status != SubGhzProtocolStatusOk) {
-                    FURI_LOG_E(TAG, "Failed to re-deserialize transmitter: %d", status);
-                    emulate_context_reset_transmitter();
-                    ctx->is_transmitting = false;
-                    notification_message(app->notifications, &sequence_error);
-                    consumed = true;
-                    break;
-                }
-
                 //Preset Loading
                 EmulateResolvedPreset resolved_preset;
                 if(!emulate_context_resolve_tx_preset(app, ctx, &resolved_preset)) {
@@ -1111,7 +1110,7 @@ bool protopirate_scene_emulate_on_event(void* context, SceneManagerEvent event) 
             FURI_LOG_I(TAG, "Stop event received, txrx_state=%d", app->txrx->txrx_state);
 
             if(app->txrx->txrx_state == ProtoPirateTxRxStateTx && ctx) {
-                if((furi_get_tick() - app->start_tx_time) > MIN_TX_TIME) {
+                if((furi_get_tick() - app->start_tx_time) > emulate_min_tx_time(ctx)) {
                     stop_tx(app);
                     ctx->is_transmitting = false;
                 } else {
@@ -1146,9 +1145,8 @@ bool protopirate_scene_emulate_on_event(void* context, SceneManagerEvent event) 
 
         if(ctx && ctx->is_transmitting) {
             if(app->txrx->txrx_state == ProtoPirateTxRxStateTx) {
-                //Are we supposed to be stopping the TX from the MIN_TX
-                if((app->start_tx_time &&
-                    ((furi_get_tick() - app->start_tx_time) > MIN_TX_TIME)) &&
+                if((app->start_tx_time && ((furi_get_tick() - app->start_tx_time) >
+                                           emulate_min_tx_time(ctx))) &&
                    ctx->flag_stop_called) {
                     stop_tx(app);
                     ctx->is_transmitting = false;
@@ -1198,14 +1196,6 @@ void protopirate_scene_emulate_on_exit(void* context) {
     // Delete temp file if we were using one
     protopirate_storage_delete_temp();
 
-    // Plugin churn protection: emulate may have swapped the protocol plugin to match
-    // the capture file's modulation (e.g. session is AM650 but the capture is an FM
-    // protocol → AM plugin unloaded, FM plugin loaded). If we let the receiver scene
-    // re-enter on top of that mismatched plugin, refresh_protocol_registry would do a
-    // SECOND swap (FM→AM) on top of an already-fragmented heap and crash with OOM.
-    // Restore the session preset's plugin here, while the heap is at its cleanest
-    // (no receiver, no worker, no FF, no transmitter alive), so the contiguous
-    // chunks needed by the plugin loader are most likely available.
     if(app->radio_initialized && app->txrx && app->txrx->environment && app->txrx->preset &&
        app->txrx->preset->data) {
         if(!protopirate_apply_protocol_registry_for_preset_data(

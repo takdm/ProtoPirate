@@ -55,6 +55,7 @@ App(
         "protocols/kia_v7.c",
         "protocols/ford_v1.c",
         "protocols/ford_v2.c",
+        "protocols/ford_v3.c",
         "protocols/honda_static.c",
         "protocols/land_rover_v0.c",
         "protocols/mazda_v0.c",
